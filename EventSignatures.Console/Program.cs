@@ -1,4 +1,5 @@
-﻿using Newtonsoft.Json.Linq;
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Org.BouncyCastle.Crypto.Digests;
 using Org.BouncyCastle.Tsp;
 using Sodium;
@@ -6,25 +7,27 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
+
 Console.WriteLine("Loading json data...");
 
+// Initialize configuration
 string jsonPath = "./Data/ObjectEvent.jsonld";
+string writePath = "C:/temp/signedEvent.jsonld";
 string hashUrl = "http://127.0.0.1:5000/hash";
 
-// Load the epcis event data
+// Initialize services
+HttpClient httpClient = new HttpClient();
+httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+// Load the json data
 var eventJson = File.ReadAllText(jsonPath);
 
-// Generate the EPCIS Event Hash
-var httpClient = new HttpClient();
-httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-var hashRequest = new HttpRequestMessage(HttpMethod.Post, hashUrl);
-hashRequest.Content = new StringContent(eventJson, Encoding.UTF8, "application/json");
-var response = await httpClient.SendAsync(hashRequest);
-var eventHash = await response.Content.ReadAsStringAsync();
+// Genereate the EPCIS Hash
+string eventHash = await GenerateEventHash(eventJson, httpClient);
 Console.WriteLine($"Generated Event Hash:\n {eventHash}");
 
 // Generate an ED25519 public-private key pair
-KeyPair keyPair = PublicKeyAuth.GenerateKeyPair();
+KeyPair keyPair = PublicKeyBox.GenerateKeyPair();
 
 // Extract the public and private keys
 byte[] publicKey = keyPair.PublicKey;
@@ -55,7 +58,7 @@ var didDocument = new DIDDocument()
 byte[] nonce = PublicKeyBox.GenerateNonce();
 
 // Encrypt the event hash using the public key and nonce
-byte[] encryptedHash = PublicKeyBox.Create("test", nonce, keyPair.PrivateKey, keyPair.PublicKey);
+byte[] encryptedHash = PublicKeyBox.Create(eventHash, nonce, keyPair.PrivateKey, keyPair.PublicKey);
 
 // Store the event hash as a base64 string
 string nonceBase64 = Convert.ToBase64String(nonce);
@@ -79,12 +82,12 @@ byte[] tsqBytes = tsq.GetEncoded();
 
 // Send the time stamp request to a trusted Time Stamping Authority
 string timestamp = string.Empty;
-HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, "https://freetsa.org/tsr");
+HttpRequestMessage timestampRequest = new HttpRequestMessage(HttpMethod.Post, "https://freetsa.org/tsr");
 using (var stream = new MemoryStream(tsqBytes))
 {
-    hashRequest.Content = new StreamContent(stream);
-    hashRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/timestamp-query");
-    var timestampResponse = await httpClient.SendAsync(hashRequest);
+    timestampRequest.Content = new StreamContent(stream);
+    timestampRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/timestamp-query");
+    var timestampResponse = await httpClient.SendAsync(timestampRequest);
     var test = timestampResponse.Content.ReadAsStringAsync();
     using (var reader = new StreamReader(timestampResponse.Content.ReadAsStream()))
     {
@@ -102,9 +105,25 @@ var proof = new Proof()
     timestamp = timestamp,
     verificationMethod = didDocument.verificationMethod.id,
 };
-jEvent.Add("proof", JsonSerializer.Serialize(proof));
+jEvent.Add("proof", JToken.FromObject(proof));
 
-// 6. Verified the event proof/signature and the timestamp token.
+// Write the file for reference
+File.WriteAllText(writePath, jEvent.ToString());
+
+// Verify the proof, event, and time stamp token
+
+
+// Demonstrate how editing the data invalidates the proof
+
+async Task<string> GenerateEventHash(string eventJson, HttpClient httpClient)
+{
+    // Generate the EPCIS Event Hash
+    var hashRequest = new HttpRequestMessage(HttpMethod.Post, hashUrl);
+    hashRequest.Content = new StringContent(eventJson, Encoding.UTF8, "application/json");
+    var response = await httpClient.SendAsync(hashRequest);
+    var eventHash = await response.Content.ReadAsStringAsync();
+    return eventHash;
+}
 
 
 public class DIDDocument
