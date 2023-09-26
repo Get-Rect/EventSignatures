@@ -23,7 +23,7 @@ httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue(
 var eventJson = File.ReadAllText(jsonPath);
 
 // Genereate the EPCIS Hash
-string eventHash = await GenerateEventHash(eventJson, httpClient);
+string eventHash = await GenerateEventHash(eventJson);
 Console.WriteLine($"Generated Event Hash:\n {eventHash}");
 
 // Generate an ED25519 public-private key pair
@@ -64,38 +64,8 @@ byte[] encryptedHash = PublicKeyBox.Create(eventHash, nonce, keyPair.PrivateKey,
 string nonceBase64 = Convert.ToBase64String(nonce);
 string encryptedHashBase64 = Convert.ToBase64String(encryptedHash);
 
-// Format the byte array to be time stamped
-Sha512Digest digest = new Sha512Digest();
-byte[] dataToTimestamp = Encoding.ASCII.GetBytes(eventHash);
-int readLength = dataToTimestamp.Length;
-digest.BlockUpdate(dataToTimestamp, 0, readLength);
-byte[] result = new byte[digest.GetDigestSize()];
-digest.DoFinal(result, 0);
-
-// Generate a timestamp query
-TimeStampRequestGenerator tsqGenerator = new TimeStampRequestGenerator();
-tsqGenerator.SetCertReq(false); // Request the TSA certificate
-TimeStampRequest tsq = tsqGenerator.Generate(TspAlgorithms.Sha512, result);
-
-// Convert the timestamp query to bytes
-byte[] tsqBytes = tsq.GetEncoded();
-
-// Send the time stamp request to a trusted Time Stamping Authority
-string timestamp = string.Empty;
-HttpRequestMessage timestampRequest = new HttpRequestMessage(HttpMethod.Post, "https://freetsa.org/tsr");
-using (var stream = new MemoryStream(tsqBytes))
-{
-    timestampRequest.Content = new StreamContent(stream);
-    timestampRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/timestamp-query");
-    var timestampResponse = await httpClient.SendAsync(timestampRequest);
-    var test = timestampResponse.Content.ReadAsStringAsync();
-    using (var reader = new StreamReader(timestampResponse.Content.ReadAsStream()))
-    {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(reader.ReadToEnd());
-        timestamp = Convert.ToBase64String(bytes);
-    }
-
-}
+// Generate a timestamp
+string timestamp = await GenerateTimeStamp(encryptedHashBase64);
 
 // Add the proof to the event
 JObject jEvent = JObject.Parse(eventJson);
@@ -111,11 +81,12 @@ jEvent.Add("proof", JToken.FromObject(proof));
 File.WriteAllText(writePath, jEvent.ToString());
 
 // Verify the proof, event, and time stamp token
-
+// decrypt the proof value using the public key and compare event hashes
+// decrypt the results from a time stamp verification request. The results should be the same event hash
 
 // Demonstrate how editing the data invalidates the proof
 
-async Task<string> GenerateEventHash(string eventJson, HttpClient httpClient)
+async Task<string> GenerateEventHash(string eventJson)
 {
     // Generate the EPCIS Event Hash
     var hashRequest = new HttpRequestMessage(HttpMethod.Post, hashUrl);
@@ -123,6 +94,40 @@ async Task<string> GenerateEventHash(string eventJson, HttpClient httpClient)
     var response = await httpClient.SendAsync(hashRequest);
     var eventHash = await response.Content.ReadAsStringAsync();
     return eventHash;
+}
+
+async Task<string> GenerateTimeStamp(string data)
+{
+    // Format the byte array to be time stamped
+    Sha512Digest digest = new Sha512Digest();
+    byte[] dataToTimestamp = Encoding.ASCII.GetBytes(data);
+    int readLength = dataToTimestamp.Length;
+    digest.BlockUpdate(dataToTimestamp, 0, readLength);
+    byte[] result = new byte[digest.GetDigestSize()];
+    digest.DoFinal(result, 0);
+
+    TimeStampRequestGenerator tsqGenerator = new TimeStampRequestGenerator();
+    tsqGenerator.SetCertReq(false); // Request the TSA certificate
+    TimeStampRequest tsq = tsqGenerator.Generate(TspAlgorithms.Sha512, result);
+
+    // Convert the timestamp query to bytes
+    byte[] tsqBytes = tsq.GetEncoded();
+
+    string timestamp = string.Empty;
+    HttpRequestMessage timestampRequest = new HttpRequestMessage(HttpMethod.Post, "https://freetsa.org/tsr");
+    using (var stream = new MemoryStream(tsqBytes))
+    {
+        timestampRequest.Content = new StreamContent(stream);
+        timestampRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/timestamp-query");
+        var timestampResponse = await httpClient.SendAsync(timestampRequest);
+        var test = timestampResponse.Content.ReadAsStringAsync();
+        using (var reader = new StreamReader(timestampResponse.Content.ReadAsStream()))
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(reader.ReadToEnd());
+            timestamp = Convert.ToBase64String(bytes);
+        }
+    }
+    return timestamp;
 }
 
 
