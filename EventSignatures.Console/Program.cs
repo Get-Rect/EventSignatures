@@ -1,17 +1,13 @@
-﻿using Org.BouncyCastle.X509;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using Org.BouncyCastle.Crypto;
+﻿using Newtonsoft.Json.Linq;
+using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto.Digests;
-using Org.BouncyCastle.Crypto.Parameters;
-using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Tsp;
 using Org.BouncyCastle.Utilities.IO.Pem;
+using Org.BouncyCastle.X509;
 using Sodium;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
-using Org.BouncyCastle.Asn1.X509;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 Console.WriteLine("Loading json data...\n");
 
@@ -56,7 +52,7 @@ var didDocument = new DIDDocument()
     verificationMethod = new VerificationMethod()
     {
         id = "https://example.org/digitallink/urn:gdst:example.org:party:test.test#key-1",
-        type = "Ed25519VerificationKey2018", 
+        type = "Ed25519VerificationKey2018",
         publicKeyBase64 = publicKeyBase64
     }
 };
@@ -91,28 +87,40 @@ File.WriteAllText(writePath, jEvent.ToString());
 byte[] decryptedData = PublicKeyBox.Open(Convert.FromBase64String(proof.signature), nonce, privateKey, publicKey);
 string decryptedHash = Encoding.ASCII.GetString(decryptedData);
 Console.WriteLine($"\n[{eventHash}] - Original Hash");
-Console.WriteLine($"[{decryptedHash}] - Decrypted Hash");
+Console.WriteLine($"[{decryptedHash}] - Decrypted Hash\n");
 
-// decrypt the results from a time stamp verification request. The results should be the same event hash
+// Validate the timestamp token
 TimeStampResponse tsr;
-byte[] tsaCertificateBytes = File.ReadAllBytes(tsaCertificatePath);
 using (MemoryStream ms = new MemoryStream(Convert.FromBase64String(proof.timestamp)))
 {
-    //var test = "";
-    //using (StreamReader sr = new StreamReader(ms))
-    //{
-    //    test = sr.ReadToEnd();
-    //    Console.WriteLine(test);
-    //}
     PemObject tsrPem = new PemReader(new StreamReader(ms)).ReadPemObject();
     tsr = new TimeStampResponse(Convert.FromBase64String(proof.timestamp));
+
+    // Get the certificate used to sign this request
     var store = tsr.TimeStampToken.GetCertificates();
     var collection = store.GetMatches(null);
     var iterator = collection.GetEnumerator();
     iterator.MoveNext();
     X509Certificate tsaCertificate = new X509CertificateParser().ReadCertificate(((X509CertificateStructure)iterator.Current).GetEncoded());
 
+    // Use the cert to validate the time stamp token
     tsr.TimeStampToken.Validate(tsaCertificate);
+
+    // Read the data from the request
+    var tsrValidationBytes = tsr.TimeStampToken.TimeStampInfo.GetMessageImprintDigest();
+    var tsrEventHash = Convert.ToBase64String(tsrValidationBytes);
+    
+    // Generate a SHA-512 hash of the expected encrypted hash value to compare to the SHA-512 hash of the encrypted event hash that was time stamped
+    Sha512Digest digest = new Sha512Digest();
+    byte[] encryptedHashBytes = encryptedHash;
+    int readLength = encryptedHashBytes.Length;
+    digest.BlockUpdate(encryptedHashBytes, 0, readLength);
+    byte[] result = new byte[digest.GetDigestSize()];
+    digest.DoFinal(result, 0);
+    string computedHash = Convert.ToBase64String(result);
+    Console.WriteLine($"[{tsrEventHash}] - TSR Event Hash");
+    Console.WriteLine($"[{computedHash}] - Computed Event Hash");
+
     DateTime timestampTime = tsr.TimeStampToken.TimeStampInfo.GenTime;
     Console.WriteLine("Timestamp Time: " + timestampTime);
 }
@@ -133,7 +141,7 @@ async Task<string> GenerateTimeStamp(string data)
 {
     // Format the byte array to be time stamped
     Sha512Digest digest = new Sha512Digest();
-    byte[] dataToTimestamp = Encoding.ASCII.GetBytes(data);
+    byte[] dataToTimestamp = Convert.FromBase64String(data);
     int readLength = dataToTimestamp.Length;
     digest.BlockUpdate(dataToTimestamp, 0, readLength);
     byte[] result = new byte[digest.GetDigestSize()];
@@ -158,7 +166,6 @@ async Task<string> GenerateTimeStamp(string data)
     }
     return timestamp;
 }
-
 
 public class DIDDocument
 {
