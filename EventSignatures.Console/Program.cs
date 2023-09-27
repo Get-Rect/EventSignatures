@@ -1,17 +1,24 @@
-﻿using Newtonsoft.Json;
+﻿using Org.BouncyCastle.X509;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Digests;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Tsp;
+using Org.BouncyCastle.Utilities.IO.Pem;
 using Sodium;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Org.BouncyCastle.Asn1.X509;
 
-
-Console.WriteLine("Loading json data...");
+Console.WriteLine("Loading json data...\n");
 
 // Initialize configuration
 string jsonPath = "./Data/ObjectEvent.jsonld";
+string tsaCertificatePath = "./Timestamping/cacert.pem";
+string tsaPath = "./Timestamping/tsa.crt";
 string writePath = "C:/temp/signedEvent.jsonld";
 string hashUrl = "http://127.0.0.1:5000/hash";
 
@@ -24,7 +31,7 @@ var eventJson = File.ReadAllText(jsonPath);
 
 // Genereate the EPCIS Hash
 string eventHash = await GenerateEventHash(eventJson);
-Console.WriteLine($"Generated Event Hash:\n {eventHash}");
+Console.WriteLine($"Generated Event Hash:\n {eventHash}\n");
 
 // Generate an ED25519 public-private key pair
 KeyPair keyPair = PublicKeyBox.GenerateKeyPair();
@@ -80,9 +87,35 @@ jEvent.Add("proof", JToken.FromObject(proof));
 // Write the file for reference
 File.WriteAllText(writePath, jEvent.ToString());
 
-// Verify the proof, event, and time stamp token
-// decrypt the proof value using the public key and compare event hashes
+// Decrypt the proof value using the public key and compare event hashes
+byte[] decryptedData = PublicKeyBox.Open(Convert.FromBase64String(proof.signature), nonce, privateKey, publicKey);
+string decryptedHash = Encoding.ASCII.GetString(decryptedData);
+Console.WriteLine($"\n[{eventHash}] - Original Hash");
+Console.WriteLine($"[{decryptedHash}] - Decrypted Hash");
+
 // decrypt the results from a time stamp verification request. The results should be the same event hash
+TimeStampResponse tsr;
+byte[] tsaCertificateBytes = File.ReadAllBytes(tsaCertificatePath);
+using (MemoryStream ms = new MemoryStream(Convert.FromBase64String(proof.timestamp)))
+{
+    //var test = "";
+    //using (StreamReader sr = new StreamReader(ms))
+    //{
+    //    test = sr.ReadToEnd();
+    //    Console.WriteLine(test);
+    //}
+    PemObject tsrPem = new PemReader(new StreamReader(ms)).ReadPemObject();
+    tsr = new TimeStampResponse(Convert.FromBase64String(proof.timestamp));
+    var store = tsr.TimeStampToken.GetCertificates();
+    var collection = store.GetMatches(null);
+    var iterator = collection.GetEnumerator();
+    iterator.MoveNext();
+    X509Certificate tsaCertificate = new X509CertificateParser().ReadCertificate(((X509CertificateStructure)iterator.Current).GetEncoded());
+
+    tsr.TimeStampToken.Validate(tsaCertificate);
+    DateTime timestampTime = tsr.TimeStampToken.TimeStampInfo.GenTime;
+    Console.WriteLine("Timestamp Time: " + timestampTime);
+}
 
 // Demonstrate how editing the data invalidates the proof
 
@@ -107,7 +140,7 @@ async Task<string> GenerateTimeStamp(string data)
     digest.DoFinal(result, 0);
 
     TimeStampRequestGenerator tsqGenerator = new TimeStampRequestGenerator();
-    tsqGenerator.SetCertReq(false); // Request the TSA certificate
+    tsqGenerator.SetCertReq(true); // Request the TSA certificate
     TimeStampRequest tsq = tsqGenerator.Generate(TspAlgorithms.Sha512, result);
 
     // Convert the timestamp query to bytes
@@ -120,12 +153,8 @@ async Task<string> GenerateTimeStamp(string data)
         timestampRequest.Content = new StreamContent(stream);
         timestampRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/timestamp-query");
         var timestampResponse = await httpClient.SendAsync(timestampRequest);
-        var test = timestampResponse.Content.ReadAsStringAsync();
-        using (var reader = new StreamReader(timestampResponse.Content.ReadAsStream()))
-        {
-            var bytes = System.Text.Encoding.UTF8.GetBytes(reader.ReadToEnd());
-            timestamp = Convert.ToBase64String(bytes);
-        }
+        var bytes = await timestampResponse.Content.ReadAsByteArrayAsync();
+        timestamp = Convert.ToBase64String(bytes);
     }
     return timestamp;
 }
