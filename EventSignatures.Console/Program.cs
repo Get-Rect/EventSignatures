@@ -5,9 +5,13 @@ using Org.BouncyCastle.Tsp;
 using Org.BouncyCastle.Utilities.IO.Pem;
 using Org.BouncyCastle.X509;
 using Sodium;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using static System.Runtime.InteropServices.JavaScript.JSType;
+
+var stopwatch = new Stopwatch();
+stopwatch.Start();
 
 Console.WriteLine("Loading json data...\n");
 
@@ -125,7 +129,8 @@ using (MemoryStream ms = new MemoryStream(Convert.FromBase64String(proof.timesta
     Console.WriteLine("Timestamp Time: " + timestampTime);
 }
 
-// Demonstrate how editing the data invalidates the proof
+stopwatch.Stop();
+Console.WriteLine($"Total Elapses time: [{stopwatch.Elapsed}]");
 
 async Task<string> GenerateEventHash(string eventJson)
 {
